@@ -1,57 +1,36 @@
 WITH 
 
+-- import CTEs
+
 paid_orders as (
-    select 
-        orders.ID           as order_id,
-        orders.USER_ID	    as customer_id,
-        orders.ORDER_DATE   as order_placed_at,
-        orders.STATUS       as order_status,
-        p.total_amount_paid,
-        p.payment_finalized_date,
-        C.FIRST_NAME        as customer_first_name,
-        C.LAST_NAME         as customer_last_name
-    FROM {{ ref('orders') }} as orders
-    left join (
-            select 
-                orderid             as order_id, 
-                max(created)        as payment_finalized_date, 
-                sum(amount) / 100.0 as total_amount_paid
-            from {{ ref('payments') }}
-            where status <> 'fail'
-            group by 1
-        ) p ON orders.id = p.order_id
-    left join {{ ref('customers') }} C on orders.USER_ID = C.ID ),
+    select * from {{ ref('paid_orders') }}
+),
 
 customer_orders as (
-    select 
-        C.ID                as customer_id, 
-        min(ORDER_DATE)   as first_order_date, 
-        max(ORDER_DATE)   as most_recent_order_date, 
-        count(orders.ID)  as number_of_orders
-    from {{ ref('customers') }} C 
-    left join {{ ref('orders') }} as orders
-    on orders.USER_ID = C.ID 
-    group by 1)
+    select * from {{ ref('customer_orders') }}
+),
 
-select
-p.*,
-ROW_NUMBER() OVER (ORDER BY p.order_id) as transaction_seq,
-ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY p.order_id) as customer_sales_seq,
-CASE WHEN c.first_order_date = p.order_placed_at
-THEN 'new'
-ELSE 'return' END as nvsr,
-x.clv_bad as customer_lifetime_value,
-c.first_order_date as fdos
-FROM paid_orders p
-left join customer_orders as c USING (customer_id)
-LEFT OUTER JOIN 
-(
-        select
-        p.order_id,
-        sum(t2.total_amount_paid) as clv_bad
-    from paid_orders p
-    left join paid_orders t2 on p.customer_id = t2.customer_id and p.order_id >= t2.order_id
-    group by 1
-    order by p.order_id
-) x on x.order_id = p.order_id
-ORDER BY order_id
+clv_bad as (
+    select * from {{ ref('clv_bad') }}
+),
+
+fct_customer_orders as (
+    select
+        paid_orders.*,
+        ROW_NUMBER() OVER (ORDER BY paid_orders.order_id)                                       as transaction_seq,
+        ROW_NUMBER() OVER (PARTITION BY paid_orders.customer_id ORDER BY paid_orders.order_id)  as customer_sales_seq,
+        CASE 
+            WHEN customer_orders.first_order_date = paid_orders.order_placed_at THEN 'new'
+            ELSE 'return' 
+        END                                                                                     as nvsr,
+        clv_bad.clv_bad                                                                         as customer_lifetime_value,
+        customer_orders.first_order_date                                                        as fdos
+    FROM paid_orders
+    left join customer_orders
+        on customer_orders.customer_id = paid_orders.customer_id
+    left outer join clv_bad 
+        on clv_bad.order_id = paid_orders.order_id
+    ORDER BY order_id
+)
+
+select * from fct_customer_orders
